@@ -3,11 +3,10 @@
 
   // ---------------------------------------------------------------- roster
   const DEFAULT_NAMES = [
-    'Oleh Chobotar', 'Ahmed Bahaa', 'Andrii Andrieiev', 'Andrii Sheremeta',
-    'Anna Tymofyeyeva', 'Danylo Baranov', 'Khrystyna Bronevych', 'Maksym Denysov',
-    'Maksym Onishko', 'Oleksandr Posmitiuha', 'Roman Lahodniuk', 'Roman Vozniak',
-    'Stanislav Orlov', 'Uliana Skrynnyk', 'Mykhailo Kolpakov', 'Vladyslav Haleta',
-    'Kostiantyn Onyshchuk',
+    'Ahmed Bahaa', 'Andrii Andrieiev', 'Andrii Sheremeta', 'Anna Tymofyeyeva', 'Danylo Baranov',
+    'Khrystyna Bronevych', 'Kostiantyn Onyshchuk', 'Maksym Denysov', 'Maksym Onishko',
+    'Mykhailo Kolpakov', 'Oleh Chobotar', 'Oleksandr Posmitiuha', 'Roman Lahodniuk',
+    'Roman Vozniak', 'Stanislav Orlov', 'Uliana Skrynnyk', 'Vladyslav Haleta',
   ];
   const STORE_KEY = 'wtn.roster.v1';
   const SOUND_KEY = 'wtn.sound.v1';
@@ -28,7 +27,8 @@
     } catch (e) { /* fall through */ }
     return DEFAULT_NAMES.map(name => ({ name, present: true }));
   }
-  let roster = loadRoster();
+  const byName = (a, b) => a.name.localeCompare(b.name);
+  let roster = loadRoster().sort(byName);
   const saveRoster = () => store.set(STORE_KEY, JSON.stringify(roster));
 
   const initials = name => {
@@ -693,6 +693,7 @@
     const v = $('addName').value.trim();
     if (!v) return;
     roster.push({ name: v, present: true });
+    roster.sort(byName);
     $('addName').value = '';
     rosterChanged();
   };
