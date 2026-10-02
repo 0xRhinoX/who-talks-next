@@ -35,12 +35,13 @@
     const p = name.trim().split(/\s+/);
     return ((p[0]?.[0] || '') + (p.length > 1 ? p[p.length - 1][0] : (p[0]?.[1] || ''))).toUpperCase();
   };
-  const colorFor = name => {
-    // Stable colour per person: hash the name into a hue.
+  // Stable colour per person: hash the name into a hue.
+  const hueFor = name => {
     let h = 0;
     for (const ch of name) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
-    return `hsl(${(h * 137.508) % 360}, 78%, 62%)`;
+    return (h * 137.508) % 360;
   };
+  const colorFor = name => `hsl(${hueFor(name)}, 78%, 62%)`;
   const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const firstName = n => n.split(/\s+/)[0];
   const ordinal = n => { const s = ['th', 'st', 'nd', 'rd'], v = n % 100; return n + (s[(v - 20) % 10] || s[v] || s[0]); };
@@ -617,7 +618,8 @@
     clearTimeout(endTimer);
     endTimer = setTimeout(() => {
       speakers = finished.map(m => m.name);
-      cur = 0; turnStart = performance.now();
+      cur = 0; turnStart = meetStart = performance.now();
+      talk = speakers.map(() => 0); doneAt = 0; popT = 0; flyer = null; fx.length = 0; sand.key = '';
       setState('meeting');
       renderMeeting(true);
     }, 1400);
@@ -635,7 +637,7 @@
     $('nextBtn').disabled = done;
     $('prevBtn').disabled = cur === 0;
     $('queueList').innerHTML = speakers.map((n, i) => `<li data-i="${i}" class="${i < cur ? 'spoke' : i === cur ? 'current' : ''}">
-      <span class="rk">${i + 1}</span>${marbleChip(n)}<span class="nm">${esc(n)}</span><span class="tag">${i < cur ? 'done' : i === cur ? 'now' : ''}</span></li>`).join('');
+      <span class="rk">${i + 1}</span>${marbleChip(n)}<span class="nm">${esc(n)}</span><span class="tag">${i < cur ? fmt(talk[i] || 0) : i === cur ? 'now' : ''}</span></li>`).join('');
     if (flash) {
       const card = $('speakerCard');
       card.classList.remove('flash'); void card.offsetWidth; card.classList.add('flash');
@@ -657,10 +659,19 @@
 
   function goTo(i) {
     if (state !== 'meeting') return;
+    const now = performance.now();
+    if (cur < speakers.length) talk[cur] += (now - turnStart) / 1000;
+    const prev = cur;
     cur = Math.max(0, Math.min(speakers.length, i));
-    turnStart = performance.now();
-    if (cur < speakers.length) tone(660, 0.1, 'triangle', 0.04);
-    else { fanfare(1); burst(W / 2, camY + viewH() * 0.5, '#ffc93c', 80); }
+    if (cur === prev) return;
+    turnStart = now;
+    popT = 0;
+    fx.length = 0;
+    // the speaker who just finished rolls into the tray
+    flyer = cur === prev + 1 && prev < speakers.length && lastSpot
+      ? { i: prev, x: lastSpot.x, y: lastSpot.y, r: lastSpot.r, t: 0 } : null;
+    if (cur < speakers.length) { doneAt = 0; tone(660, 0.1, 'triangle', 0.04); }
+    else { doneAt = now; flyer = null; fanfare(1); if (!reduceMotion) spawnConfetti(140, 0, cw); }
     renderMeeting(true);
   }
 
@@ -748,12 +759,366 @@
     else if (e.key === 's' && (state === 'racing' || state === 'countdown')) skipRace();
   });
 
+  // ---------------------------------------------------------------- meeting stage
+  // While people talk the canvas shows the speaker's marble under a spotlight, a sand hourglass
+  // in their colour that drains over the time-box, the next speaker warming up and a tray of
+  // everyone who has spoken. After the last speaker it shows the round's scoreboard.
+  function hslRgb(h, s, l) {
+    const k = n => (n + h / 30) % 12, a = s * Math.min(l, 1 - l);
+    const f = n => l - a * Math.max(-1, Math.min(k(n) - 3, 9 - k(n), 1));
+    return [f(0) * 255, f(8) * 255, f(4) * 255];
+  }
+  const rgbFor = name => hslRgb(hueFor(name), 0.78, 0.62);
+  const HOT = [255, 70, 60];
+  const mix = (a, b, t) => a.map((v, i) => Math.round(v + (b[i] - v) * t));
+  const rgbStr = (c, a = 1) => `rgba(${c[0]},${c[1]},${c[2]},${a})`;
+  const fmt = s => { s = Math.max(0, Math.floor(s)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+  const easeBack = t => { const c = 1.7; return 1 + (c + 1) * Math.pow(t - 1, 3) + c * Math.pow(t - 1, 2); };
+
+  const sand = { key: '', C: 0, Rr: 0, cs: 0, mid: 0, maxW: 0, mask: null, grid: null, N: 0, passed: 0, off: null, octx: null, img: null, pal: null };
+  const fx = [];
+  let talk = [], meetStart = 0, doneAt = 0, popT = 1, flyer = null, clock = 0, lastSpot = null;
+
+  const hgW = (u, maxW, neck) => neck + (maxW - neck) * Math.pow(Math.sin(Math.min(1, u * 1.12) * Math.PI / 2), 0.75);
+
+  function buildSand(hh, frac, name) {
+    const cs = Math.max(3, Math.round(hh / 110));
+    let Rr = Math.floor(hh / cs); if (Rr % 2) Rr--;
+    const mid = Rr / 2, maxW = Math.floor(Rr * 0.3), C = maxW * 2 + 2;
+    const mask = new Uint8Array(C * Rr), grid = new Uint8Array(C * Rr);
+    for (let r = 0; r < Rr; r++) {
+      const w = hgW(Math.abs(r + 0.5 - mid) / mid, maxW, 1.2);
+      for (let c = 0; c < C; c++) if (Math.abs(c + 0.5 - C / 2) < w) mask[r * C + c] = 1;
+    }
+    let topCells = 0;
+    for (let i = 0; i < mid * C; i++) topCells += mask[i];
+    const N = Math.floor(topCells * 0.8), drained = Math.round(N * frac);
+    const fill = (r0, dir, count) => {
+      for (let r = r0; count > 0 && r >= 0 && r < Rr; r += dir)
+        for (let c = 0; c < C && count > 0; c++) if (mask[r * C + c]) { grid[r * C + c] = 1 + (Math.random() * 4 | 0); count--; }
+    };
+    fill(mid - 1, -1, N - drained);
+    fill(Rr - 1, -1, drained);
+    const off = sand.off || document.createElement('canvas');
+    off.width = C; off.height = Rr;
+    const octx = off.getContext('2d');
+    const base = rgbFor(name);
+    Object.assign(sand, {
+      C, Rr, cs, mid, maxW, mask, grid, N, passed: drained, off, octx, img: octx.createImageData(C, Rr),
+      pal: [0.72, 0.86, 1, 1.12].map(f => base.map(v => Math.min(255, Math.round(v * f)))),
+    });
+  }
+
+  function stepSand(allowed) {
+    const { C, Rr, mid, mask, grid } = sand;
+    for (let r = Rr - 2; r >= 0; r--) {
+      const ltr = Math.random() < 0.5;
+      for (let k = 0; k < C; k++) {
+        const c = ltr ? k : C - 1 - k, i = r * C + c, g = grid[i];
+        if (!g) continue;
+        if (r + 1 === mid && sand.passed >= allowed) continue; // the neck only lets time through
+        const below = i + C;
+        let t = -1;
+        if (mask[below] && !grid[below]) t = below;
+        else {
+          const d = Math.random() < 0.5 ? 1 : -1;
+          for (const dc of [d, -d]) {
+            const cc = c + dc;
+            if (cc >= 0 && cc < C && mask[below + dc] && !grid[below + dc]) { t = below + dc; break; }
+          }
+        }
+        if (t >= 0) { grid[t] = g; grid[i] = 0; if (r + 1 === mid) sand.passed++; }
+      }
+    }
+  }
+
+  function drawHourglass(cx, top, over) {
+    const { C, Rr, cs, mid, maxW, grid, img, pal, octx, off } = sand;
+    const w = C * cs, h = Rr * cs, gx = cx - w / 2;
+    const d = img.data;
+    for (let i = 0; i < grid.length; i++) {
+      const g = grid[i], p = i * 4;
+      if (g) { const c = pal[g - 1]; d[p] = c[0]; d[p + 1] = c[1]; d[p + 2] = c[2]; d[p + 3] = 255; }
+      else d[p + 3] = 0;
+    }
+    octx.putImageData(img, 0, 0);
+    // posts
+    ctx.strokeStyle = '#5b67b8'; ctx.lineWidth = 5; ctx.lineCap = 'round';
+    for (const x of [gx - 10, gx + w + 10]) { ctx.beginPath(); ctx.moveTo(x, top - 4); ctx.lineTo(x, top + h + 4); ctx.stroke(); }
+    // glass
+    const outline = () => {
+      ctx.beginPath();
+      for (let s = 0; s <= 80; s++) {
+        const y = (s / 80) * Rr, ww = hgW(Math.abs(y - mid) / mid, maxW, 1.2) + 0.6;
+        ctx.lineTo(cx - ww * cs, top + y * cs);
+      }
+      for (let s = 80; s >= 0; s--) {
+        const y = (s / 80) * Rr, ww = hgW(Math.abs(y - mid) / mid, maxW, 1.2) + 0.6;
+        ctx.lineTo(cx + ww * cs, top + y * cs);
+      }
+      ctx.closePath();
+    };
+    outline();
+    ctx.fillStyle = 'rgba(170,179,232,0.06)'; ctx.fill();
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(off, gx, top, w, h);
+    ctx.imageSmoothingEnabled = true;
+    outline();
+    ctx.strokeStyle = over ? 'rgba(255,93,115,0.75)' : 'rgba(170,179,232,0.55)'; ctx.lineWidth = 2; ctx.stroke();
+    // glint
+    ctx.strokeStyle = 'rgba(255,255,255,0.12)'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(cx - w * 0.3, top + h * 0.1); ctx.lineTo(cx - w * 0.36, top + h * 0.3); ctx.stroke();
+    // caps
+    ctx.fillStyle = '#ffc93c';
+    for (const y of [top - 12, top + h + 2]) { roundRect(gx - 18, y, w + 36, 10, 5); ctx.fill(); }
+  }
+
+  function drawMarble(x, y, r, name, heat = 0) {
+    const base = mix(rgbFor(name), HOT, heat);
+    const grd = ctx.createRadialGradient(x - r * 0.35, y - r * 0.4, r * 0.08, x, y, r);
+    grd.addColorStop(0, '#ffffff'); grd.addColorStop(0.3, rgbStr(base)); grd.addColorStop(1, rgbStr(base.map(v => v * 0.5)));
+    ctx.fillStyle = grd;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#10131f';
+    ctx.font = `800 ${Math.max(7, r * 0.62)}px Figtree, system-ui, sans-serif`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(initials(name), x, y + r * 0.04);
+  }
+
+  function fitFont(text, maxW, size, family, weight = 400) {
+    let s = size;
+    ctx.font = `${weight} ${s}px ${family}`;
+    while (s > 12 && ctx.measureText(text).width > maxW) { s -= 1; ctx.font = `${weight} ${s}px ${family}`; }
+    return s;
+  }
+
+  function spawnConfetti(n, x0, w) {
+    const cols = ['#ffc93c', '#ff5d73', '#7f8cf0', '#5fe0b0', '#eceeff'];
+    for (let i = 0; i < n; i++) fx.push({
+      kind: 'confetti', x: x0 + Math.random() * w, y: -10 - Math.random() * 120, vx: (Math.random() - 0.5) * 60,
+      vy: 60 + Math.random() * 120, rot: Math.random() * 6, vr: (Math.random() - 0.5) * 8, life: 6,
+      color: cols[i % cols.length], size: 4 + Math.random() * 4,
+    });
+  }
+
+  function updateFx(dt) {
+    for (let i = fx.length - 1; i >= 0; i--) {
+      const p = fx[i];
+      p.life -= dt;
+      if (p.kind === 'steam') { p.x += p.vx * dt; p.y += p.vy * dt; p.size += 14 * dt; }
+      else { p.vy = Math.min(p.vy + 120 * dt, 160); p.x += p.vx * dt + Math.sin(p.rot) * 0.6; p.y += p.vy * dt; p.rot += p.vr * dt; }
+      if (p.life <= 0 || p.y > ch + 20) fx.splice(i, 1);
+    }
+  }
+  function drawFx() {
+    for (const p of fx) {
+      if (p.kind === 'steam') {
+        ctx.fillStyle = `rgba(200,205,230,${Math.max(0, p.life / p.max) * 0.22})`;
+        ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2); ctx.fill();
+      } else {
+        ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.rot);
+        ctx.fillStyle = p.color; ctx.fillRect(-p.size / 2, -p.size / 4, p.size, p.size / 2);
+        ctx.restore();
+      }
+    }
+  }
+
+  function drawMeeting(dt) {
+    clock += dt;
+    const motion = !reduceMotion;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = '#0b0e1c'; ctx.fillRect(0, 0, cw, ch);
+    updateFx(dt);
+    if (cur >= speakers.length) { drawScoreboard(); drawFx(); return; }
+    ctx.fillStyle = '#131833'; ctx.fillRect(0, ch - 64, cw, 64);
+
+    const name = speakers[cur];
+    const el = (performance.now() - turnStart) / 1000;
+    const frac = Math.min(1, el / timebox), overS = Math.max(0, el - timebox);
+    const heat = Math.min(1, overS / 30);
+    const wide = cw >= 620;
+    const pad = 20, stripH = 64, area = ch - stripH;
+
+    // layout
+    let mCx, mCy, mr, hgCx, hgTop, hh, nameY, nameMax, timeY;
+    if (wide) {
+      hh = Math.min(520, area - pad * 2 - 56);
+      hgCx = cw * 0.68; hgTop = pad + 14 + (area - pad * 2 - 56 - hh) / 2; timeY = hgTop + hh + 40;
+      mCx = cw * 0.28; mr = Math.max(34, Math.min(70, area * 0.11)); mCy = area * 0.42;
+      nameY = mCy + mr + 48; nameMax = cw * 0.46;
+    } else {
+      mr = 26; mCx = cw / 2; nameY = pad + 36; mCy = nameY + 30 + mr; nameMax = cw - 40;
+      hgTop = mCy + mr + 30; timeY = area - 18; hh = Math.max(120, timeY - 28 - hgTop); hgCx = cw / 2;
+    }
+
+    const key = `${cur}|${Math.round(hh)}`;
+    if (sand.key !== key) { buildSand(hh, frac, name); sand.key = key; }
+    const allowed = Math.floor(sand.N * frac);
+    stepSand(allowed); stepSand(allowed);
+
+    // spotlight cone + pool
+    const cone = ctx.createLinearGradient(0, 0, 0, mCy + mr);
+    cone.addColorStop(0, 'rgba(255,225,150,0.14)'); cone.addColorStop(1, 'rgba(255,225,150,0.03)');
+    ctx.fillStyle = cone;
+    ctx.beginPath(); ctx.moveTo(mCx - 18, 0); ctx.lineTo(mCx + 18, 0);
+    ctx.lineTo(mCx + mr * 2.4, mCy + mr + 10); ctx.lineTo(mCx - mr * 2.4, mCy + mr + 10); ctx.closePath(); ctx.fill();
+    const pool = ctx.createRadialGradient(mCx, mCy, mr * 0.5, mCx, mCy, mr * 3.2);
+    pool.addColorStop(0, heat > 0 ? `rgba(255,93,115,${0.1 + heat * 0.15})` : 'rgba(255,201,60,0.12)'); pool.addColorStop(1, 'rgba(255,201,60,0)');
+    ctx.fillStyle = pool; ctx.fillRect(mCx - mr * 3.2, mCy - mr * 3.2, mr * 6.4, mr * 6.4);
+
+    drawHourglass(hgCx, hgTop, overS > 0);
+
+    // the speaker
+    popT = Math.min(1, popT + dt * 2.4);
+    const sc = easeBack(popT);
+    const bob = motion ? Math.sin(clock * 2.2) * 4 : 0;
+    const jit = motion && heat > 0 ? (1 + heat * 3) : 0;
+    const jx = (Math.random() - 0.5) * jit, jy = (Math.random() - 0.5) * jit;
+    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    ctx.beginPath(); ctx.ellipse(mCx, mCy + mr + 10, mr * (0.9 - bob / 60), mr * 0.2, 0, 0, Math.PI * 2); ctx.fill();
+    if (overS > 0) {
+      ctx.strokeStyle = `rgba(255,93,115,${0.35 + 0.3 * Math.sin(clock * 6)})`; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(mCx + jx, mCy + bob + jy, mr * sc + 8 + 3 * Math.sin(clock * 6), 0, Math.PI * 2); ctx.stroke();
+      if (motion && Math.random() < 0.15 + heat * 0.5) {
+        fx.push({ kind: 'steam', x: mCx + (Math.random() - 0.5) * mr, y: mCy - mr * 0.8 + bob, vx: (Math.random() - 0.5) * 16, vy: -30 - Math.random() * 30, size: 4, life: 1.6, max: 1.6 });
+      }
+    }
+    drawFx();
+    if (sc > 0.01) drawMarble(mCx + jx, mCy + bob + jy, mr * sc, name, heat);
+    lastSpot = { x: mCx, y: mCy, r: mr };
+
+    // name
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#ffc93c';
+    ctx.font = '800 11px Figtree, system-ui, sans-serif';
+    const eyebrow = `NOW SPEAKING · ${cur + 1} OF ${speakers.length}`;
+    if (wide) {
+      ctx.fillText(eyebrow, mCx, mCy - mr - 34);
+      const parts = name.split(/\s+/), first = parts[0], rest = parts.slice(1).join(' ');
+      fitFont(first, nameMax, Math.min(44, cw * 0.045), 'Bungee, Impact, sans-serif');
+      ctx.fillStyle = '#eceeff'; ctx.fillText(first, mCx, nameY);
+      if (rest) {
+        fitFont(rest, nameMax, 18, 'Figtree, system-ui, sans-serif', 700);
+        ctx.fillStyle = '#8d93bd'; ctx.fillText(rest, mCx, nameY + 34);
+      }
+    } else {
+      ctx.fillText(eyebrow, mCx, pad + 6);
+      fitFont(name, nameMax, 24, 'Bungee, Impact, sans-serif');
+      ctx.fillStyle = '#eceeff'; ctx.fillText(name, mCx, nameY);
+    }
+
+    // time under the hourglass
+    ctx.font = `700 ${wide ? 22 : 18}px "JetBrains Mono", ui-monospace, monospace`;
+    ctx.fillStyle = overS > 0 ? '#ff5d73' : '#eceeff';
+    ctx.fillText(overS > 0 ? `+${fmt(overS)} over` : `${fmt(timebox - el + 0.999)} left`, hgCx, timeY);
+
+    drawStrip(dt, stripH, motion);
+  }
+
+  // bottom strip: who has spoken (tray) and who is warming up next
+  function drawStrip(dt, stripH, motion) {
+    const y = ch - stripH / 2, r = 11;
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.font = '800 10px Figtree, system-ui, sans-serif';
+    ctx.fillStyle = '#8d93bd';
+    ctx.fillText('SPOKEN', 16, y - 20);
+    const nextName = speakers[cur + 1];
+    const nextW = nextName ? Math.min(220, cw * 0.4) : 0;
+    const trayW = cw - 32 - nextW;
+    const step = Math.min(2 * r + 6, (trayW - 2 * r) / Math.max(1, speakers.length - 1));
+    const slot = i => [16 + r + i * step, y + 6];
+    for (let i = 0; i < cur; i++) {
+      if (flyer && flyer.i === i) continue;
+      const [sx, sy] = slot(i);
+      drawMarble(sx, sy, r, speakers[i]);
+    }
+    if (!cur) { ctx.fillStyle = 'rgba(141,147,189,0.5)'; ctx.font = '600 12px Figtree, system-ui, sans-serif'; ctx.fillText('nobody yet', 16, y + 6); }
+    if (flyer) {
+      flyer.t = Math.min(1, flyer.t + dt * 1.8);
+      const t = flyer.t, e = t * t * (3 - 2 * t);
+      const [tx, ty] = slot(flyer.i);
+      const x = flyer.x + (tx - flyer.x) * e, yy = flyer.y + (ty - flyer.y) * e - Math.sin(e * Math.PI) * 80;
+      drawMarble(x, yy, flyer.r + (r - flyer.r) * e, speakers[flyer.i]);
+      if (t >= 1) flyer = null;
+    }
+    if (nextName) {
+      const nx = cw - nextW + 4;
+      ctx.textAlign = 'left';
+      ctx.font = '800 10px Figtree, system-ui, sans-serif'; ctx.fillStyle = '#ffc93c';
+      ctx.fillText('UP NEXT', nx, y - 20);
+      const hop = motion ? Math.abs(Math.sin(clock * 4)) * 8 : 0;
+      ctx.fillStyle = 'rgba(0,0,0,0.3)';
+      ctx.beginPath(); ctx.ellipse(nx + 13, y + 20, 10 - hop / 3, 3, 0, 0, Math.PI * 2); ctx.fill();
+      drawMarble(nx + 13, y + 6 - hop, 13, nextName);
+      ctx.fillStyle = '#eceeff'; ctx.textAlign = 'left';
+      fitFont(nextName, nextW - 40, 14, 'Figtree, system-ui, sans-serif', 700);
+      ctx.fillText(nextName, nx + 34, y + 6);
+    }
+  }
+
+  function drawScoreboard() {
+    const n = speakers.length;
+    const total = ((doneAt || performance.now()) - meetStart) / 1000;
+    const overCount = talk.filter(s => s > timebox).length;
+    const pad = 20;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    fitFont('Round complete', cw - 40, 34, 'Bungee, Impact, sans-serif');
+    ctx.fillStyle = '#ffc93c'; ctx.fillText('Round complete', cw / 2, pad + 22);
+    ctx.font = '600 14px Figtree, system-ui, sans-serif'; ctx.fillStyle = '#8d93bd';
+    ctx.fillText(`${n} updates · ${fmt(total)} total · ${overCount ? overCount + ' over the time-box' : 'nobody went over'}`, cw / 2, pad + 54);
+
+    const top = pad + 100, bottom = ch - pad;
+    const rowH = Math.min(30, (bottom - top) / n);
+    const r = Math.max(6, Math.min(11, rowH * 0.38));
+    const nameW = Math.min(190, cw * 0.32);
+    const x0 = Math.max(16, (cw - Math.min(cw - 32, 760)) / 2), x1 = cw - x0;
+    const barX = x0 + r * 2 + 10 + nameW, barMax = Math.max(40, x1 - barX - 110);
+    const maxT = Math.max(timebox, ...talk);
+    const spoken = talk.map((s, i) => [s, i]).filter(([s]) => s >= 1);
+    const fastest = spoken.length > 1 ? spoken.reduce((a, b) => (b[0] < a[0] ? b : a))[1] : -1;
+    const longest = spoken.length > 1 ? spoken.reduce((a, b) => (b[0] > a[0] ? b : a))[1] : -1;
+    const lineX = barX + (timebox / maxT) * barMax;
+    ctx.strokeStyle = 'rgba(255,201,60,0.4)'; ctx.setLineDash([4, 4]); ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(lineX, top - 6); ctx.lineTo(lineX, top + rowH * n); ctx.stroke(); ctx.setLineDash([]);
+    ctx.font = '700 10px Figtree, system-ui, sans-serif'; ctx.fillStyle = 'rgba(255,201,60,0.8)';
+    ctx.fillText(`${fmt(timebox)} time-box`, lineX, top - 14);
+    const fs = Math.max(10, Math.min(14, rowH * 0.5));
+    speakers.forEach((name, i) => {
+      const y = top + rowH * i + rowH / 2, s = talk[i] || 0;
+      const bounce = reduceMotion ? 0 : Math.max(0, Math.sin(clock * 3 - i * 0.35)) * Math.min(4, rowH * 0.12);
+      drawMarble(x0 + r, y - bounce, r, name);
+      ctx.textAlign = 'left';
+      fitFont(name, nameW, fs, 'Figtree, system-ui, sans-serif', 700);
+      ctx.fillStyle = '#eceeff'; ctx.fillText(name, x0 + r * 2 + 10, y);
+      const bw = (s / maxT) * barMax, okW = Math.min(bw, (timebox / maxT) * barMax);
+      const bh = Math.max(4, rowH * 0.42);
+      ctx.fillStyle = rgbStr(rgbFor(name), 0.85); ctx.fillRect(barX, y - bh / 2, okW, bh);
+      if (bw > okW) { ctx.fillStyle = '#ff5d73'; ctx.fillRect(barX + okW, y - bh / 2, bw - okW, bh); }
+      ctx.font = `700 ${fs - 1}px "JetBrains Mono", ui-monospace, monospace`;
+      ctx.fillStyle = s > timebox ? '#ff5d73' : '#8d93bd';
+      const tx = barX + bw + 8;
+      ctx.fillText(fmt(s), tx, y);
+      const badge = i === fastest ? 'fastest' : i === longest ? 'longest' : '';
+      if (badge) {
+        ctx.font = `800 ${fs - 3}px Figtree, system-ui, sans-serif`;
+        ctx.fillStyle = i === fastest ? '#5fe0b0' : '#ffc93c';
+        ctx.fillText(badge.toUpperCase(), tx + 44, y);
+      }
+    });
+    if (!reduceMotion && Math.random() < 0.08) spawnConfetti(1, 0, cw);
+  }
+
   // ---------------------------------------------------------------- main loop
   let last = performance.now(), acc = 0;
   function frame(now) {
     const dt = Math.min(0.1, (now - last) / 1000);
     last = now;
-    if (state === 'racing' || state === 'ending' || state === 'meeting') {
+    if (state === 'meeting') {
+      drawMeeting(dt);
+      requestAnimationFrame(frame);
+      return;
+    }
+    if (state === 'racing' || state === 'ending') {
       acc += dt * speed;
       let n = 0;
       while (acc >= STEP && n < 12) { step(); acc -= STEP; n++; }

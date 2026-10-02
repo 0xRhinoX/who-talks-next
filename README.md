@@ -2,7 +2,7 @@
 
 A marble derby that picks the speaking order for your stand-up.
 
-Every player is a marble. They drop through a peg forest, switchbacks, spinners, a bumper pit and a funnel, and the order they cross the finish line is the order people speak in. After the race the sidebar becomes a speaker queue with a turn timer.
+Every player is a marble. They drop through a peg forest, switchbacks, spinners, a bumper pit and a funnel, and the order they cross the finish line is the order people speak in. After the race the track becomes a stage: the speaker's marble sits under a spotlight next to a sand hourglass that drains over their time-box (the marble overheats and steams if they run over), the next speaker warms up below, and the round ends with a scoreboard of who talked how long.
 
 ## Controls
 
