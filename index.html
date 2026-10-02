@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Who Talks Next</title>
+<meta name="description" content="A marble derby that decides the speaking order for your stand-up.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bungee&family=Figtree:wght@400;500;700;800&family=JetBrains+Mono:wght@500;700&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="bar">
+  <div class="brand">
+    <h1>Who Talks Next</h1>
+    <p>Stand-up marble derby</p>
+  </div>
+  <div class="controls">
+    <button id="startBtn" class="btn primary" type="button">Start race <kbd>Enter</kbd></button>
+    <div class="seg" role="group" aria-label="Race speed">
+      <button type="button" class="seg-btn is-on" data-speed="1">1×</button>
+      <button type="button" class="seg-btn" data-speed="2">2×</button>
+      <button type="button" class="seg-btn" data-speed="4">4×</button>
+    </div>
+    <button id="skipBtn" class="btn" type="button" disabled>Skip to result</button>
+    <button id="soundBtn" class="btn icon" type="button" aria-pressed="true" title="Sound">Sound on</button>
+    <button id="rosterBtn" class="btn" type="button">Players <span id="rosterCount" class="count">17</span></button>
+  </div>
+</header>
+
+<main class="layout">
+  <section class="stage" id="stage" aria-label="Race track">
+    <canvas id="track"></canvas>
+    <div id="startCard" class="start-card">
+      <p class="eyebrow">Today's derby</p>
+      <h2><span id="startCount">17</span> marbles. One speaking order.</h2>
+      <p>Everyone drops through the pegs, switchbacks, spinners and bumpers. First across the line opens the meeting.</p>
+      <button id="startBtn2" class="btn primary big" type="button">Drop the marbles</button>
+    </div>
+    <div id="countdown" class="countdown" hidden></div>
+    <div id="toasts" class="toasts" aria-live="polite"></div>
+  </section>
+
+  <aside class="side">
+    <section id="panelReady" class="panel">
+      <h3>On the start grid</h3>
+      <ul id="gridList" class="plist"></ul>
+    </section>
+
+    <section id="panelRace" class="panel" hidden>
+      <h3>Live standings <span id="raceClock" class="clock">0.0s</span></h3>
+      <ol id="standList" class="plist ranked"></ol>
+    </section>
+
+    <section id="panelMeet" class="panel" hidden>
+      <div class="speaker" id="speakerCard">
+        <p class="eyebrow">Now speaking · <span id="turnPos">1 of 17</span></p>
+        <div class="speaker-main">
+          <span class="marble big" id="speakerMarble"></span>
+          <h2 id="speakerName">Name</h2>
+        </div>
+        <div class="timer-row">
+          <span id="turnTimer" class="timer">0:00</span>
+          <label class="timebox">Time-box
+            <select id="timebox">
+              <option value="60">1 min</option>
+              <option value="120" selected>2 min</option>
+              <option value="180">3 min</option>
+              <option value="300">5 min</option>
+            </select>
+          </label>
+        </div>
+        <div class="meter"><span id="turnMeter"></span></div>
+        <p class="upnext">Up next: <strong id="upNext">—</strong></p>
+        <div class="speaker-actions">
+          <button id="prevBtn" class="btn" type="button">← Back</button>
+          <button id="nextBtn" class="btn primary" type="button">Next speaker <kbd>Space</kbd></button>
+        </div>
+      </div>
+      <h3>Speaking order</h3>
+      <ol id="queueList" class="plist ranked queue"></ol>
+      <button id="againBtn" class="btn wide" type="button">Race again <kbd>R</kbd></button>
+    </section>
+  </aside>
+</main>
+
+<dialog id="rosterDlg" class="dlg">
+  <form method="dialog" id="rosterForm">
+    <h3>Players</h3>
+    <p class="hint">Untick whoever is out today. Changes are saved in this browser.</p>
+    <ul id="rosterList" class="roster"></ul>
+    <div class="add-row">
+      <label for="addName" class="sr">Add a player</label>
+      <input id="addName" type="text" placeholder="Add a player" autocomplete="off">
+      <button id="addBtn" class="btn" type="button">Add</button>
+    </div>
+    <div class="dlg-actions">
+      <button id="resetRoster" class="btn ghost" type="button">Reset to default team</button>
+      <button class="btn primary" value="close">Done</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="app.js"></script>
+</body>
+</html>
